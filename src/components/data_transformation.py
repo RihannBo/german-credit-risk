@@ -1,105 +1,169 @@
-from __future__ import annotations
+import os
+import sys
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, OrdinalEncoder
 
-from config import (
-    CHECKING_CATEGORIES,
-    DROP_FOR_X,
-    JOB_CATEGORIES,
-    NOMINAL_FEATURES,
-    NUM_FEATURES,
-    ORDINAL_FEATURES,
-    RISK_MAP,
-    SAVING_CATEGORIES,
-    TARGET_COL,
-)
 from exception import CustomException
-from logger import logger
+from logger import logging
+from utils import save_object
 
 
+# ================= CONFIG =================
+@dataclass
+class DataTransformationConfig:
+    preprocessor_obj_file_path: str = os.path.join('artifacts', 'preprocessor.pkl')
+
+
+# ================= MAIN CLASS =================
 class DataTransformation:
-    """Cleaning + feature engineering from the EDA / modeling notebook."""
+    def __init__(self):
+        self.config = DataTransformationConfig()
 
-    @staticmethod
-    def clean(df: pd.DataFrame) -> pd.DataFrame:
-        out = df.copy()
-        out.columns = (
-            out.columns.str.lower().str.strip().str.replace(" ", "_", regex=False)
-        )
-        out["saving_accounts"] = out["saving_accounts"].fillna("unknown")
-        out["checking_account"] = out["checking_account"].fillna("unknown")
+    # ================= FEATURE ENGINEERING =================
+    def apply_feature_engineering(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Applies feature engineering steps
+        """
+        try:
+            # Log transformation
+            df["credit_amount_log"] = np.log1p(df["credit_amount"])
 
-        cat_cols = out.select_dtypes(include=["object"]).columns.tolist()
-        if "job" not in cat_cols:
-            cat_cols.append("job")
-        for col in cat_cols:
-            out[col] = out[col].astype("category")
-        return out
+            # Convert job to string (for consistent categorical handling)
+            df["job"] = df["job"].astype(str)
 
-    @staticmethod
-    def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-        """Add ``credit_amount_log`` and encode ``risk`` as 0/1 for training."""
-        out = df.copy()
-        if TARGET_COL not in out.columns:
-            raise ValueError(f"Missing target column '{TARGET_COL}' for training.")
-        out[TARGET_COL] = out[TARGET_COL].map(RISK_MAP)
-        if out[TARGET_COL].isna().any():
-            raise ValueError("Unknown labels in risk column; expected 'good'/'bad'.")
-        out["credit_amount_log"] = np.log1p(out["credit_amount"].astype(float))
-        return out
+            return df
 
-    @staticmethod
-    def split_features_target(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-        """Return X, y matching notebook (drops raw credit_amount and target)."""
-        engineered = DataTransformation.engineer_features(df)
-        y = engineered[TARGET_COL]
-        X = engineered.drop(columns=list(DROP_FOR_X), errors="ignore")
-        missing = set(NUM_FEATURES + ORDINAL_FEATURES + NOMINAL_FEATURES) - set(X.columns)
-        if missing:
-            raise ValueError(f"Missing expected columns: {sorted(missing)}")
-        return X, y
+        except Exception as e:
+            raise CustomException(e, sys)
 
-    @staticmethod
-    def prepare_inference_features(df: pd.DataFrame) -> pd.DataFrame:
-        """Build feature matrix for scoring (no ``risk`` required)."""
-        out = DataTransformation.clean(df)
-        if TARGET_COL in out.columns:
-            out = out.drop(columns=[TARGET_COL])
-        out["credit_amount_log"] = np.log1p(out["credit_amount"].astype(float))
-        out = out.drop(columns=["credit_amount"], errors="ignore")
-        missing = set(NUM_FEATURES + ORDINAL_FEATURES + NOMINAL_FEATURES) - set(out.columns)
-        if missing:
-            raise ValueError(f"Missing expected columns: {sorted(missing)}")
-        return out[NUM_FEATURES + ORDINAL_FEATURES + NOMINAL_FEATURES]
+    # ================= PREPROCESSOR =================
+    def get_data_transformer_object(self):
+        """
+        Creates and returns preprocessing pipeline
+        """
+        try:
+            # Feature groups
+            num_features = ["age", "credit_amount_log", "duration"]
 
-    @staticmethod
-    def build_preprocessor() -> ColumnTransformer:
-        """Same ``ColumnTransformer`` as the notebook."""
-        return ColumnTransformer(
-            transformers=[
-                ("num", StandardScaler(), NUM_FEATURES),
-                (
-                    "nom",
-                    OneHotEncoder(handle_unknown="ignore"),
-                    NOMINAL_FEATURES,
-                ),
-                (
-                    "ord",
-                    OrdinalEncoder(
-                        categories=[JOB_CATEGORIES, SAVING_CATEGORIES, CHECKING_CATEGORIES]
-                    ),
-                    ORDINAL_FEATURES,
-                ),
-            ]
-        )
+            ordinal_features = ["job", "saving_accounts", "checking_account"]
 
+            nominal_features = ["sex", "housing", "purpose"]
 
-def run_cleaning_pipeline(raw_df: pd.DataFrame) -> pd.DataFrame:
-    try:
-        return DataTransformation.clean(raw_df)
-    except Exception as e:
-        logger.error("Cleaning failed: %s", e)
-        raise CustomException(e) from e
+            # Category ordering
+            job_categories = ["unknown", "0", "1", "2", "3"]
+
+            saving_categories = ["unknown", "little", "moderate", "rich", "quite rich"]
+
+            checking_categories = ["unknown", "little", "moderate", "rich"]
+
+            # Numerical pipeline
+            num_pipeline = Pipeline(
+                steps=[
+                    ("imputer", SimpleImputer(strategy="median")),
+                    ("scaler", StandardScaler())
+                ]
+            )
+
+            # Nominal pipeline
+            nominal_pipeline = Pipeline(
+                steps=[
+                    ("imputer", SimpleImputer(strategy="most_frequent")),
+                    ("onehot", OneHotEncoder(handle_unknown="ignore"))
+                ]
+            )
+
+            # Ordinal pipeline
+            ordinal_pipeline = Pipeline(
+                steps=[
+                    ("imputer", SimpleImputer(strategy="constant", fill_value="unknown")),
+                    ("ordinal", OrdinalEncoder(categories=[
+                        job_categories,
+                        saving_categories,
+                        checking_categories
+                    ]))
+                ]
+            )
+
+            logging.info(f"Numerical features: {num_features}")
+            logging.info(f"Ordinal features: {ordinal_features}")
+            logging.info(f"Nominal features: {nominal_features}")
+
+            # Combine pipelines
+            preprocessor = ColumnTransformer(
+                transformers=[
+                    ("num", num_pipeline, num_features),
+                    ("ord", ordinal_pipeline, ordinal_features),
+                    ("nom", nominal_pipeline, nominal_features)
+                ]
+            )
+
+            return preprocessor
+
+        except Exception as e:
+            raise CustomException(e, sys)
+
+    # ================= MAIN TRANSFORMATION =================
+    def initiate_data_transformation(self, train_path, test_path):
+        """
+        Executes full transformation pipeline
+        """
+        try:
+            # Load data
+            train_df = pd.read_csv(train_path)
+            test_df = pd.read_csv(test_path)
+
+            logging.info("Train and test data loaded")
+
+            # ================= FEATURE ENGINEERING =================
+            train_df = self.apply_feature_engineering(train_df)
+            test_df = self.apply_feature_engineering(test_df)
+
+            # ================= TARGET MAPPING =================
+            train_df["risk"] = train_df["risk"].map({"bad": 1, "good": 0})
+            test_df["risk"] = test_df["risk"].map({"bad": 1, "good": 0})
+
+            if train_df["risk"].isnull().any():
+                raise ValueError("Target mapping produced NaN values")
+
+            logging.info("Target mapping completed")
+
+            # ================= SPLIT FEATURES =================
+            target_column = "risk"
+
+            X_train = train_df.drop(columns=[target_column, "credit_amount"])
+            y_train = train_df[target_column]
+
+            X_test = test_df.drop(columns=[target_column, "credit_amount"])
+            y_test = test_df[target_column]
+
+            # ================= PREPROCESSING =================
+            preprocessor = self.get_data_transformer_object()
+
+            logging.info("Applying preprocessing pipeline")
+
+            X_train_arr = preprocessor.fit_transform(X_train)
+            X_test_arr = preprocessor.transform(X_test)
+
+            # Combine X and y
+            train_arr = np.c_[X_train_arr, np.array(y_train)]
+            test_arr = np.c_[X_test_arr, np.array(y_test)]
+
+            # ================= SAVE PREPROCESSOR =================
+            save_object(
+                file_path=self.config.preprocessor_obj_file_path,
+                obj=preprocessor
+            )
+
+            logging.info(f"Preprocessor saved at {self.config.preprocessor_obj_file_path}")
+
+            return train_arr, test_arr, self.config.preprocessor_obj_file_path
+
+        except Exception as e:
+            raise CustomException(e, sys)

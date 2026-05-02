@@ -1,15 +1,24 @@
-from pathlib import Path
-from typing import Any
+import os
+import sys
 
-import joblib
+import numpy as np
+import pandas as pd
+import dill
+
+from exception import CustomException
+
+def save_object(file_path, obj):
+    try:
+        dir_path = os.path.dirname(file_path)
+        os.makedirs(dir_path, exist_ok=True)
+
+        with open(file_path, "wb") as file_obj:
+            dill.dump(obj, file_obj)
+
+    except Exception as e:
+        raise CustomException(e, sys)
 
 
-def save_object(obj: Any, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(obj, path)
 
 
-def load_object(path: Path) -> Any:
-    if not path.is_file():
-        raise FileNotFoundError(f"Artifact not found: {path}")
-    return joblib.load(path)
+
