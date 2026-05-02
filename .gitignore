@@ -150,6 +150,7 @@ activemq-data/
 *.sage.py
 
 # Environments
+.artifacts
 .env
 .envrc
 .venv
@@ -218,3 +219,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ML artifacts and local logs
+artifacts/
+logs/
